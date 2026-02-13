@@ -1,0 +1,49 @@
+﻿<Window x:Class="AutoOpener.Configurator.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:AutoOpener.Configurator"
+        mc:Ignorable="d"
+        Title="MainWindow" Height="450" Width="800">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="Profile name:" VerticalAlignment="Center"/>
+        <TextBox x:Name="tbName" Grid.Row="0" Margin="140,0,0,0" Width="360" HorizontalAlignment="Left"/>
+
+        <TextBlock Grid.Row="1" Text="Revit version:" VerticalAlignment="Center"/>
+        <ComboBox x:Name="cbVersion" Grid.Row="1" Margin="140,0,0,0" Width="120" HorizontalAlignment="Left">
+            <ComboBoxItem Content="2022"/>
+            <ComboBoxItem Content="2023"/>
+        </ComboBox>
+
+        <TextBlock Grid.Row="2" Text="Model path (RSN://... or .rvt):" VerticalAlignment="Center"/>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="140,0,0,0">
+            <TextBox x:Name="tbModel" Width="360"/>
+            <Button Content="Browse..." Margin="8,0,0,0" Click="OnBrowse"/>
+            <Button Content="Build RSN..." Width="110" Margin="8,0,0,0" Click="OnBuildRsn"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="3" Text="Worksets (names, ; separated):" VerticalAlignment="Center"/>
+        <TextBox x:Name="tbWorksets" Grid.Row="3" Margin="140,0,0,0" Width="360" HorizontalAlignment="Left"/>
+
+        <TextBlock Grid.Row="4" TextWrapping="Wrap" Margin="0,8,0,8">
+          Укажите RSN://host/... для Revit Server или укажите локальный/сетевой .rvt.
+          При сохранении профиля хост RSN будет добавлен в RSN.ini при необходимости.
+        </TextBlock>
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Save profile" Width="120" Margin="0,0,8,0" Click="OnSaveProfile"/>
+            <Button Content="Ensure RSN host" Width="140" Margin="0,0,8,0" Click="OnEnsureRsn"/>
+            <Button Content="Close" Width="80" Click="OnClose"/>
+        </StackPanel>
+    </Grid>
+</Window>

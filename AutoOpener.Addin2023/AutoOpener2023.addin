@@ -1,0 +1,10 @@
+<RevitAddIns>
+	<AddIn Type="Application">
+		<Name>AutoOpen</Name>
+		<Assembly>AutoOpener.Addin2023.dll</Assembly>
+		<AddInId>7A6B48A5-88B8-4B77-8F30-50BF2A9E9A22</AddInId>
+		<FullClassName>AutoOpener.Addin2023.App</FullClassName>
+		<VendorId>ATPO</VendorId>
+		<VendorDescription>AutoOpener</VendorDescription>
+	</AddIn>
+</RevitAddIns>

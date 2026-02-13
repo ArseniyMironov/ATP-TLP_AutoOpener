@@ -1,0 +1,40 @@
+﻿<Window x:Class="AutoOpener.Configurator.Views.RSNDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Build RSN path" SizeToContent="WidthAndHeight"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False">
+    <Grid Margin="16" MinWidth="480">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="16"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="140"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center">Server (host):</TextBlock>
+        <TextBox x:Name="tbHost" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center">Project:</TextBlock>
+        <TextBox x:Name="tbProject" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center">Model (.rvt):</TextBlock>
+        <TextBox x:Name="tbModel" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8"/>
+
+        <TextBlock Grid.Row="4" Grid.ColumnSpan="2" Margin="0,0,0,8" TextWrapping="Wrap">
+      Preview:
+        </TextBlock>
+        <TextBox x:Name="tbPreview" Grid.Row="5" Grid.ColumnSpan="2" IsReadOnly="True" FontFamily="Consolas" />
+
+        <StackPanel Grid.Row="6" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Width="96" Margin="0,0,8,0" IsDefault="True" Click="OnOk">OK</Button>
+            <Button Width="96" IsCancel="True">Cancel</Button>
+        </StackPanel>
+    </Grid>
+</Window>
