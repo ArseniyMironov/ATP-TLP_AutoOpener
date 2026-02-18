@@ -19,6 +19,7 @@ namespace AutoOpener.Addin2023
 
         private ExternalEvent _extEvent;
         private OpenJobHandler _handler;
+        private FileSystemWatcher _watcher;
         private static readonly int _pid = Process.GetCurrentProcess().Id;
 
         public Result OnStartup(UIControlledApplication application)
@@ -33,7 +34,20 @@ namespace AutoOpener.Addin2023
             _extEvent = ExternalEvent.Create(_handler);
 
             application.DialogBoxShowing += OnDialogBoxShowing;
-            application.Idling += OnIdling;
+
+            try
+            {
+                _watcher = new FileSystemWatcher(PathsService.QueueDirFor(ThisVersion));
+                _watcher.Filter = "*.json";
+                _watcher.Created += OnFileCreated;
+                _watcher.EnableRaisingEvents = true;
+
+                _extEvent.Raise();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to start FileSystemWatcherL " + ex);
+            }
 
             var app = application.ControlledApplication;
             app.DocumentOpened += OnAnyDocumentOpened;
@@ -52,7 +66,7 @@ namespace AutoOpener.Addin2023
             catch { }
 
             Logger.Info("Addin 2022 shutdown");
-            application.Idling -= OnIdling;
+            _watcher?.Dispose();
             application.DialogBoxShowing -= OnDialogBoxShowing;
 
             var app = application.ControlledApplication;
@@ -62,88 +76,9 @@ namespace AutoOpener.Addin2023
             return Result.Succeeded;
         }
 
-        private void OnIdling(object sender, IdlingEventArgs e)
+        private void OnFileCreated(object sender, FileSystemEventArgs e)
         {
-            try
-            {
-                if (_handler.IsScheduled) return;
-
-                string queueDir = PathsService.QueueDirFor(ThisVersion);
-                if (!Directory.Exists(queueDir)) return;
-
-                bool hasMyJob = false;
-
-                // 1) Есть ли .json для моей версии?
-                foreach (var f in Directory.EnumerateFiles(queueDir, "*.json"))
-                {
-                    try
-                    {
-                        var j = JsonStorage.Read<AutoOpenJob>(f);
-                        if (j != null && j.RevitVersion == ThisVersion)
-                        {
-                            hasMyJob = true;
-                            break;
-                        }
-                    }
-                    catch { /* битые json обработаем в Execute → .bad */ }
-                }
-
-                // 2) Если .json нет — попробуем «реанимировать» зависший .running (>10 мин) и НЕ открытая модель
-                if (!hasMyJob)
-                {
-                    var staleCutoffUtc = DateTime.UtcNow.AddMinutes(-10);
-
-                    foreach (var f in Directory.EnumerateFiles(queueDir, "*.running"))
-                    {
-                        try
-                        {
-                            var last = File.GetLastWriteTimeUtc(f);
-                            if (last >= staleCutoffUtc) continue;
-
-                            // читаем job прямо из .running (содержимое — тот же JSON)
-                            AutoOpenJob j = null;
-                            try { j = JsonStorage.Read<AutoOpenJob>(f); } catch { j = null; }
-                            if (j == null || j.RevitVersion != ThisVersion) continue;
-
-                            // если модель уже открыта (по lock) — не ре-ставим
-                            if (!string.IsNullOrEmpty(j.RsnPath) &&
-                                AutoOpener.Core.Processes.RevitProcessLauncher.IsModelOpenViaLock(ThisVersion, j.RsnPath))
-                                continue;
-
-                            var backToJson = System.IO.Path.ChangeExtension(f, ".json");
-                            if (!File.Exists(backToJson))
-                            {
-                                File.Move(f, backToJson);
-                                Logger.Info($"OnIdling: requeued stale running '{System.IO.Path.GetFileName(backToJson)}'");
-                                hasMyJob = true;
-                            }
-                            else
-                            {
-                                // чтобы не крутиться бесконечно на одном и том же .running
-                                try
-                                {
-                                    var stale = System.IO.Path.ChangeExtension(f, ".stale");
-                                    if (File.Exists(stale)) File.Delete(f);
-                                    else File.Move(f, stale);
-                                }
-                                catch { }
-                            }
-
-                            if (hasMyJob) break;
-                        }
-                        catch { }
-                    }
-                }
-
-                if (hasMyJob)
-                {
-                    _extEvent.Raise(); // лог не шумим каждый тик, поднимаем только по делу
-                }
-            }
-            catch
-            {
-                // не ломаем цикл Idling
-            }
+            _extEvent.Raise();
         }
 
         // Только целевые автоклики + лог, прочие окна не трогаем
@@ -458,7 +393,10 @@ namespace AutoOpener.Addin2023
                 if (missingWs.Count > 0)
                     Logger.Info("[OPEN] Missing worksets: " + string.Join("; ", missingWs));
 
-                // --- FIX: Create Local if Workshared ---
+                var wsc = new WorksetConfiguration(WorksetConfigurationOption.CloseAllWorksets);
+                if (toOpenIds.Count > 0) wsc.Open(toOpenIds.ToList());
+
+                // --- FIX: Force Create Local if Workshared (ignore job flag) ---
                 try
                 {
                     bool isWorkshared = false;
@@ -483,7 +421,7 @@ namespace AutoOpener.Addin2023
                     if (isWorkshared)
                     {
                         string safeName = Path.GetFileNameWithoutExtension(_pendingJob.RsnPath);
-                        // Make unique
+                        // Unique name in our temp dir
                         string localName = $"{safeName}_{DateTime.Now:yyyyMMdd_HHmmss}_{_pid}.rvt";
                         string localPath = Path.Combine(PathsService.OutDir, localName);
 
@@ -499,9 +437,6 @@ namespace AutoOpener.Addin2023
                     Logger.Error($"[OPEN] CreateNewLocal failed: {ex.Message}");
                 }
                 // ---------------------------------------
-
-                var wsc = new WorksetConfiguration(WorksetConfigurationOption.CloseAllWorksets);
-                if (toOpenIds.Count > 0) wsc.Open(toOpenIds.ToList());
 
                 var openOpts = new OpenOptions
                 {
@@ -684,15 +619,28 @@ namespace AutoOpener.Addin2023
             {
                 try
                 {
-                    var job = JsonStorage.Read<AutoOpenJob>(f);
-                    if (job == null || job.RevitVersion != version) continue;
-
+                    // Сначала пробуем переименовать (атомарный захват).
+                    // Если файл занят (пишется), File.Move выбросит IOException
                     var running = Path.ChangeExtension(f, ".running");
-                    File.Move(f, running); // помечаем как «в работе»
+                    File.Move(f, running);
+
+                    // Теперь читаем уже наш приватный файл
+                    var job = JsonStorage.Read<AutoOpenJob>(running);
+                    if (job == null || job.RevitVersion != version)
+                    {
+                        TryMove(running, Path.ChangeExtension(running, ".bad"));
+                        continue;
+                    }
+
                     return running;
                 }
-                catch
+                catch (IOException)
                 {
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error processing job file '{f}': {ex}");
                     TryMove(f, Path.ChangeExtension(f, ".bad"));
                 }
             }
