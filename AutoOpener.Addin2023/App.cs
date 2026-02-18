@@ -400,8 +400,8 @@ namespace AutoOpener.Addin2023
                 {
                     try
                     {
-                        // 1. Формируем путь для локального файла (MyDocuments)
-                        string docsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                        // 1. Формируем путь для локального файла (%AppData%\AutoOpener\{version}\out)
+                        string docsPath = PathsService.OutDirFor(_revitVersion);
                         string fileName = _pendingJob.RsnPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Last();
                         string localPathStr = Path.Combine(docsPath, fileName);
                         ModelPath localModelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(localPathStr);
