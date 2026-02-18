@@ -393,6 +393,48 @@ namespace AutoOpener.Addin2023
                 if (missingWs.Count > 0)
                     Logger.Info("[OPEN] Missing worksets: " + string.Join("; ", missingWs));
 
+                // --- FIX: Create Local if Workshared ---
+                try
+                {
+                    bool isWorkshared = false;
+                    if (_modelPath.ServerPath)
+                    {
+                        isWorkshared = true;
+                    }
+                    else
+                    {
+                        string path = _pendingJob.RsnPath;
+                        if (File.Exists(path))
+                        {
+                            try
+                            {
+                                var info = BasicFileInfo.Extract(path);
+                                isWorkshared = info.IsWorkshared;
+                            }
+                            catch { /* not critical */ }
+                        }
+                    }
+
+                    if (isWorkshared)
+                    {
+                        string safeName = Path.GetFileNameWithoutExtension(_pendingJob.RsnPath);
+                        // Make unique
+                        string localName = $"{safeName}_{DateTime.Now:yyyyMMdd_HHmmss}_{_pid}.rvt";
+                        string localPath = Path.Combine(PathsService.OutDir, localName);
+
+                        ModelPath localMp = ModelPathUtils.ConvertUserVisiblePathToModelPath(localPath);
+                        WorksharingUtils.CreateNewLocal(_modelPath, localMp);
+                        Logger.Info($"[OPEN] Created local copy: {localPath}");
+
+                        _modelPath = localMp;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[OPEN] CreateNewLocal failed: {ex.Message}");
+                }
+                // ---------------------------------------
+
                 var wsc = new WorksetConfiguration(WorksetConfigurationOption.CloseAllWorksets);
                 if (toOpenIds.Count > 0) wsc.Open(toOpenIds.ToList());
 
