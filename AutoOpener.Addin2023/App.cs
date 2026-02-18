@@ -10,6 +10,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace AutoOpener.Addin2023
 {
@@ -402,7 +404,7 @@ namespace AutoOpener.Addin2023
                     {
                         // 1. Формируем путь для локального файла (%AppData%\AutoOpener\{version}\out)
                         string docsPath = PathsService.OutDirFor(_revitVersion);
-                        string fileName = _pendingJob.RsnPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Last();
+                        string fileName = GetUniqueLocalFileName(_pendingJob.RsnPath);
                         string localPathStr = Path.Combine(docsPath, fileName);
                         ModelPath localModelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(localPathStr);
 
@@ -602,6 +604,26 @@ namespace AutoOpener.Addin2023
         }
 
         // ---------- вспомогательные методы ----------
+        private static string GetUniqueLocalFileName(string rsnPath)
+        {
+            if (string.IsNullOrEmpty(rsnPath)) return "model.rvt";
+
+            var name = Path.GetFileNameWithoutExtension(rsnPath);
+            var ext = Path.GetExtension(rsnPath);
+
+            using (var md5 = MD5.Create())
+            {
+                var inputBytes = Encoding.UTF8.GetBytes(rsnPath.ToLowerInvariant());
+                var hashBytes = md5.ComputeHash(inputBytes);
+                var sb = new StringBuilder();
+                for (int i = 0; i < hashBytes.Length; i++)
+                    sb.Append(hashBytes[i].ToString("X2"));
+
+                // Берем первые 8 символов хеша для уникальности
+                return $"{name}_{sb.ToString().Substring(0, 8)}{ext}";
+            }
+        }
+
         private static string TryTakeJobForVersion(int version)
         {
             var dir = PathsService.QueueDirFor(version);
