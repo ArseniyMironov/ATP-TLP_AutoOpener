@@ -65,7 +65,7 @@ namespace AutoOpener.Addin2023
             }
             catch { }
 
-            Logger.Info("Addin 2022 shutdown");
+            Logger.Info($"Addin {ThisVersion} shutdown");
             _watcher?.Dispose();
             application.DialogBoxShowing -= OnDialogBoxShowing;
 
@@ -401,9 +401,18 @@ namespace AutoOpener.Addin2023
                     try
                     {
                         // 1. Формируем путь для локального файла (MyDocuments)
+                        //string docsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
                         string docsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                        string fileName = _pendingJob.RsnPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Last();
-                        string localPathStr = Path.Combine(docsPath, fileName);
+                        string originalFileName = _pendingJob.RsnPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Last();
+                        string nameWithoutExt = Path.GetFileNameWithoutExtension(originalFileName);
+                        string ext = Path.GetExtension(originalFileName);
+
+                        // Получаем имя текущего пользователя Revit
+                        string userName = uiapp.Application.Username;
+
+                        // Формируем имя с суффиксом, как это делает интерфейс Revit
+                        string localFileName = $"{nameWithoutExt}_{userName}{ext}";
+                        string localPathStr = Path.Combine(docsPath, localFileName);
                         ModelPath localModelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(localPathStr);
 
                         // 2. Пытаемся удалить старый файл (строгая перезапись)
@@ -444,6 +453,34 @@ namespace AutoOpener.Addin2023
 
                 Logger.Info("IdlingOpen: calling OpenDocumentFile...");
                 var uiDoc = uiapp.OpenAndActivateDocument(_modelPath, openOpts, false);
+
+                // --- ДИАГНОСТИКА ОТКРЫТОЙ МОДЕЛИ ---
+                Document doc = uiDoc.Document;
+                if (doc.IsWorkshared)
+                {
+                    string currentPath = doc.PathName;
+                    string centralPath = "";
+                    try
+                    {
+                        var centralModelPath = doc.GetWorksharingCentralModelPath();
+                        centralPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(centralModelPath);
+                    }
+                    catch { }
+
+                    // Если текущий путь не совпадает с путем хранилища - это локальная копия
+                    bool isLocal = !currentPath.Equals(centralPath, StringComparison.OrdinalIgnoreCase);
+
+                    Logger.Info($"[DIAGNOSTIC] Is Workshared: {doc.IsWorkshared}");
+                    Logger.Info($"[DIAGNOSTIC] Current Path: {currentPath}");
+                    Logger.Info($"[DIAGNOSTIC] Central Path: {centralPath}");
+                    Logger.Info($"[DIAGNOSTIC] Is TRUE Local: {isLocal}");
+                }
+                else
+                {
+                    Logger.Info($"[DIAGNOSTIC] Document is NOT workshared. Path: {doc.PathName}");
+                }
+                // --- КОНЕЦ ДИАГНОСТИКИ ---
+
                 Logger.Info($"IdlingOpen: OpenDocumentFile returned, doc='{uiDoc?.Document.Title}'");
 
                 // формируем сообщение об успехе
