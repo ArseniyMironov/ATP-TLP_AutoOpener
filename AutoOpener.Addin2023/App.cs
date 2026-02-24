@@ -20,6 +20,7 @@ namespace AutoOpener.Addin2023
         private ExternalEvent _extEvent;
         private OpenJobHandler _handler;
         private FileSystemWatcher _watcher;
+        private System.Timers.Timer _recoveryTimer;
         private static readonly int _pid = Process.GetCurrentProcess().Id;
 
         public Result OnStartup(UIControlledApplication application)
@@ -28,7 +29,7 @@ namespace AutoOpener.Addin2023
             Directory.CreateDirectory(PathsService.LogsDir);
             Directory.CreateDirectory(PathsService.OutDir);
             CleanupService.CleanupOldArtifacts(ThisVersion, 7);
-            Logger.Info("Addin 2023 startup");
+            Logger.Info("Addin 2022 startup");
 
             _handler = new OpenJobHandler(ThisVersion);
             _extEvent = ExternalEvent.Create(_handler);
@@ -38,7 +39,7 @@ namespace AutoOpener.Addin2023
             try
             {
                 _watcher = new FileSystemWatcher(PathsService.QueueDirFor(ThisVersion));
-                _watcher.Filter = "*.json";
+                _watcher.Filter = "*.*";
                 _watcher.Created += OnFileCreated;
                 _watcher.EnableRaisingEvents = true;
 
@@ -46,7 +47,13 @@ namespace AutoOpener.Addin2023
             }
             catch (Exception ex)
             {
-                Logger.Error("Failed to start FileSystemWatcherL " + ex);
+                Logger.Error("Failed to start FileSystemWatcher: " + ex);
+
+                // Инициализация таймера восстановления зависших задач
+                _recoveryTimer = new System.Timers.Timer(300000); // 5 минут
+                _recoveryTimer.Elapsed += (s, e) => _extEvent.Raise();
+                _recoveryTimer.AutoReset = true;
+                _recoveryTimer.Enabled = true;
             }
 
             var app = application.ControlledApplication;
@@ -67,6 +74,13 @@ namespace AutoOpener.Addin2023
 
             Logger.Info($"Addin {ThisVersion} shutdown");
             _watcher?.Dispose();
+
+            if (_recoveryTimer != null)
+            {
+                _recoveryTimer.Stop();
+                _recoveryTimer.Dispose();
+            }
+
             application.DialogBoxShowing -= OnDialogBoxShowing;
 
             var app = application.ControlledApplication;
@@ -78,7 +92,12 @@ namespace AutoOpener.Addin2023
 
         private void OnFileCreated(object sender, FileSystemEventArgs e)
         {
-            _extEvent.Raise();
+            if (e.FullPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || e.FullPath.EndsWith(".running", StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Info("[INFO] New task in queue");
+                _extEvent.Raise();
+            }
+            Logger.Info("[INFO] New file in queue, but not .json or .running");
         }
 
         // Только целевые автоклики + лог, прочие окна не трогаем
@@ -429,6 +448,11 @@ namespace AutoOpener.Addin2023
                         // 4. Успех -> подменяем путь на локальный
                         _modelPath = localModelPath;
                         Logger.Info($"[OPEN] Created new local: {localPathStr}");
+
+                        // Пауза для снятия блокировок ОС (Антивирус, индексация диска)
+                        // Заставляем поток подождать 3 секунды перед тем, как Revit начнет читать файл
+                        Logger.Info("[OPEN] Waiting 3 seconds for OS file locks to release...");
+                        System.Threading.Thread.Sleep(3000);
                     }
                     catch (Autodesk.Revit.Exceptions.ArgumentException)
                     {
@@ -528,7 +552,7 @@ namespace AutoOpener.Addin2023
 
                 try
                 {
-                    TaskDialog.Show("AutoOpener 2022", "Open failed:\n" + reason);
+                    TaskDialog.Show("AutoOpener 2023", "Open failed:\n" + reason);
                 }
                 catch { }
             }
@@ -644,6 +668,30 @@ namespace AutoOpener.Addin2023
             var dir = PathsService.QueueDirFor(version);
             if (!Directory.Exists(dir)) return null;
 
+            var runningFiles = Directory.EnumerateFiles(dir, "*.running");
+            foreach (var rf in runningFiles)
+            {
+                try
+                {
+                    var fileAgeMinutes = (DateTime.Now - File.GetLastWriteTime(rf)).TotalMinutes;
+                    if (fileAgeMinutes > 10.0)
+                    {
+                        Logger.Info($"[RECOVERY] Resuming stuck job directly: {Path.GetFileName(rf)} (Age: {fileAgeMinutes:F1} min)");
+                        // Обновляем время файла, чтобы таймер не трогал его еще 10 минут
+                        File.SetLastWriteTime(rf, DateTime.Now);
+                        return rf;
+                    }
+                    else
+                    {
+                        Logger.Info($"[RECOVERY-SKIP] Ignored {Path.GetFileName(rf)}. It is too fresh (Age: {fileAgeMinutes:F1} min, need > 1.0)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[ERROR] Failed to recover file {rf}: {ex.Message}");
+                }
+            }
+
             var files = Directory.GetFiles(dir, "*.json")
                                  .OrderBy(File.GetCreationTimeUtc)
                                  .ThenBy(File.GetLastWriteTimeUtc);
@@ -661,6 +709,13 @@ namespace AutoOpener.Addin2023
                     var job = JsonStorage.Read<AutoOpenJob>(running);
                     if (job == null || job.RevitVersion != version)
                     {
+                        Logger.Error($"[JOB REJECTED] File '{running}' is not a valid AutoOpenJob. Moved to .bad");
+                        TryMove(running, Path.ChangeExtension(running, ".bad"));
+                        continue;
+                    }
+                    if (job.RevitVersion != version)
+                    {
+                        Logger.Error($"[JOB REJECTED] File '{running}' has wrong version (Expected: {version}, Got: {job.RevitVersion}). Moved to .bad");
                         TryMove(running, Path.ChangeExtension(running, ".bad"));
                         continue;
                     }
@@ -707,12 +762,16 @@ namespace AutoOpener.Addin2023
             IList<WorksetPreview> previews = null;
             try
             {
+                Logger.Info("[WORKSETS] Requesting WorksetInfo from Revit Server... (This may take 30-60 seconds, DO NOT KILL REVIT)");
                 previews = WorksharingUtils.GetUserWorksetInfo(mp); // получаем список рабочих наборов (предпросмотр)
+                Logger.Info($"[WORKSETS] Received {previews?.Count ?? 0} worksets from server.");
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Error($"[WORKSETS-FAIL] Server unreachable or error: {ex.Message}");
                 return result;
             }
+
             if (previews == null || previews.Count == 0) return result;
 
             foreach (var name in names)
