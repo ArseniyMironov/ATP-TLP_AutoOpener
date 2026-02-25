@@ -238,7 +238,10 @@ namespace AutoOpener.Addin2023
                     }
                 }
             }
-            catch { /* не роняем Revit из-за lock-файла */ }
+            catch (Exception ex)
+            {
+                Logger.Error($"[LOCK] Failed to remove lock '{lockPath}': {ex.Message}");
+            }
         }
 
         private static void RemoveAllLocksForCurrentProcess()
@@ -564,7 +567,10 @@ namespace AutoOpener.Addin2023
                     uiapp.Application.FailuresProcessing -= OnFailuresProcessing;
                     uiapp.Application.DocumentOpened -= OnDocumentOpened;
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Logger.Error($"[OPEN-CLEANUP] Failed to unsubscribe from events: {ex.Message}");
+                }
                 ResetState();
             }
         }
@@ -784,22 +790,26 @@ namespace AutoOpener.Addin2023
 
         private static void TryDelete(string path)
         {
-            try { if (File.Exists(path)) File.Delete(path); } catch { }
+            try { if (File.Exists(path)) File.Delete(path); }
+            catch (Exception ex) { Logger.Error($"[IO] TryDelete failed for '{path}': {ex.Message}"); }
         }
 
         private static void TryMarkBad(string path)
         {
-            try { if (File.Exists(path)) File.Move(path, Path.ChangeExtension(path, ".bad")); } catch { }
+            try { if (File.Exists(path)) File.Move(path, Path.ChangeExtension(path, ".bad")); }
+            catch (Exception ex) { Logger.Error($"[IO] TryMarkBad failed for '{path}': {ex.Message}"); }
         }
 
         private static void TryMarkFail(string path)
         {
-            try { if (File.Exists(path)) File.Move(path, Path.ChangeExtension(path, ".fail")); } catch { }
+            try { if (File.Exists(path)) File.Move(path, Path.ChangeExtension(path, ".fail")); }
+            catch (Exception ex) { Logger.Error($"[IO] TryMarkFail failed for '{path}': {ex.Message}"); }
         }
 
         private static void TryMove(string from, string to)
         {
-            try { if (File.Exists(from)) File.Move(from, to); } catch { }
+            try { if (File.Exists(from)) File.Move(from, to); }
+            catch (Exception ex) { Logger.Error($"[IO] TryMove failed '{from}' -> '{to}': {ex.Message}"); }
         }
 
         private void ResetState()
