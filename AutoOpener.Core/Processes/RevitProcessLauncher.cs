@@ -1,4 +1,5 @@
-﻿using Microsoft.Win32;
+﻿using AutoOpener.Core.IO;
+using Microsoft.Win32;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -118,15 +119,17 @@ namespace AutoOpener.Core.Processes
                         return true;
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
                     // Процесс не жив/недоступен — НЕ удаляем lock здесь
+                    Logger.Info($"[LOCK] Process {pid} check failed (might be dead): {ex.Message}");
                     return false;
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // Любая ошибка интерпретации lock — лучше вернуть "не открыт"
+                Logger.Error($"[LOCK] Critical error reading lock for '{modelPathOrRsn}': {ex.Message}");
             }
             return false;
         }
@@ -190,7 +193,10 @@ namespace AutoOpener.Core.Processes
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) 
+            {
+                Logger.Error($"[REGISTRY] TryFromInstallLocation failed for {year} ({view}): {ex.Message}");
+            }
             return null;
         }
 
@@ -215,7 +221,10 @@ namespace AutoOpener.Core.Processes
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) 
+            {
+                Logger.Error($"[REGISTRY] TryFromUninstallProductCode failed for {year} ({view}): {ex.Message}");
+            }
             return null;
         }
     }
