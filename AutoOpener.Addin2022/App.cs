@@ -335,6 +335,7 @@ namespace AutoOpener.Addin2022
                     {
                         JobId = _pendingJob != null ? _pendingJob.Id : Guid.Empty,
                         Succeeded = false,
+                        RevitVersion = _revitVersion,
                         Message = "Invalid RSN/path: " + ex.Message,
                         JobType = "Open",
                         ModelPath = _pendingJob != null ? _pendingJob.RsnPath : null
@@ -355,6 +356,7 @@ namespace AutoOpener.Addin2022
                     {
                         JobId = _pendingJob.Id,
                         Succeeded = true,
+                        RevitVersion = _revitVersion,
                         Message = "Model already open",
                         JobType = "Open",
                         ModelPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(_modelPath)
@@ -521,6 +523,7 @@ namespace AutoOpener.Addin2022
                     {
                         JobId = _pendingJob.Id,
                         Succeeded = true,
+                        RevitVersion = _revitVersion,
                         Message = msg,
                         JobType = "Open",
                         ModelPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(_modelPath)
@@ -545,6 +548,7 @@ namespace AutoOpener.Addin2022
                     {
                         JobId = _pendingJob != null ? _pendingJob.Id : Guid.Empty,
                         Succeeded = false,
+                        RevitVersion = _revitVersion,
                         Message = reason,
                         JobType = "Open",
                         ModelPath = _pendingJob != null ? _pendingJob.RsnPath : null
