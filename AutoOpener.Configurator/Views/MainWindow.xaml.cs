@@ -7,6 +7,8 @@ using AutoOpener.Core.IO;
 using AutoOpener.Core.Models;
 using System.Collections.Generic;
 using System.Runtime.Serialization.Json;
+using System.Collections.ObjectModel;
+using System.Windows.Input;
 
 namespace AutoOpener.Configurator.Views
 {
@@ -15,10 +17,16 @@ namespace AutoOpener.Configurator.Views
     /// </summary>
     public partial class MainWindow : Window
     {
+        // Коллекция рабочих наборов, привязанная к интерфейсу
+        public ObservableCollection<string> WorksetsList { get; set; }
+
         public MainWindow()
         {
             InitializeComponent();
             cbVersion.SelectedIndex = 1;
+
+            WorksetsList = new ObservableCollection<string>();
+            lbWorksets.ItemsSource = WorksetsList;
         }
 
         private void OnBrowse(object sender, RoutedEventArgs e)
@@ -39,6 +47,42 @@ namespace AutoOpener.Configurator.Views
             return int.TryParse(item.Content as string, out int v) ? v : 2023;
         }
 
+        // --- ЛОГИКА РАБОЧИХ НАБОРОВ ---
+        private void OnAddWorkset(object sender, RoutedEventArgs e)
+        {
+            var ws = (tbNewWorkset.Text ?? "").Trim();
+            if (!string.IsNullOrEmpty(ws))
+            {
+                // Исключаем дубликаты
+                if (!WorksetsList.Any(existing => string.Equals(existing, ws, StringComparison.OrdinalIgnoreCase)))
+                {
+                    WorksetsList.Add(ws);
+                }
+                tbNewWorkset.Text = string.Empty;
+                tbNewWorkset.Focus();  // Оставляем фокус для быстрого ввода следующего
+            }
+        }
+
+        // Поддержка добавления по кнопке Enter
+        private void OnNewWorksetKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                OnAddWorkset(sender, null);
+            }
+        }
+
+        private void OnRemoveWorkset(object sender, RoutedEventArgs e)
+        {
+            var selectedItem = lbWorksets.SelectedItem as string;
+            if (selectedItem != null)
+            {
+                WorksetsList.Remove(selectedItem);
+            }
+        }
+
+        // --- КОНЕЦ ЛОГИКИ РАБОЧИХ НАБОРОВ ---
+
         private void OnSaveProfile(object sender, RoutedEventArgs e)
         {
             try
@@ -57,18 +101,12 @@ namespace AutoOpener.Configurator.Views
                     return;
                 }
 
-                var ws = (tbWorksets.Text ?? "").Trim();
-                var list = ws.Length == 0 
-                    ? new List<string>() 
-                    : ws.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-
                 var profile = new Profile
                 {
                     Name = name,
                     RevitVersion = version,
                     ModelPathOrRsn = model,
-                    WorksetsByName = list,
+                    WorksetsByName = WorksetsList.ToList(),
                     OpenReadOnly = false
                 };
 
@@ -76,7 +114,7 @@ namespace AutoOpener.Configurator.Views
                 var profilesDir = AutoOpener.Core.IO.PathsService.ProfileDir;
                 var file = Path.Combine(profilesDir, SanitizeFileName(name) + ".json");
 
-                // сохраняем JSON (через ваш JsonStorage, если есть метод Write<T>)
+                // сохраняем JSON
                 try
                 {
                     JsonStorage.Write(file, profile);
@@ -121,7 +159,7 @@ namespace AutoOpener.Configurator.Views
             }
 
             var version = GetSelectrdVersion();
-            string rsnPath, action;
+            string rsnPath, action; 
             var ok = RsnIniService.EnsureServerListed(version, host, out rsnPath, out action);
 
             if (ok)
