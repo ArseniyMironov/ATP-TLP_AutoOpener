@@ -1,4 +1,5 @@
-﻿using System;
+﻿using AutoOpener.Core.Models;
+using System;
 using System.Collections.Generic;
 
 namespace AutoOpener.Core.Jobs
@@ -7,10 +8,11 @@ namespace AutoOpener.Core.Jobs
     {
         public Guid Id { get; set; }
         public int RevitVersion { get; set; }
-        public string RsnPath { get; set; }
-        public List<string> WorksetsByName { get; set; }
         public bool CreateNewLocal { get; set; } = true;
-        public bool OpenReadOnly { get; set; } = false;
-        public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
+        public List<ModelTask> Models { get; set; }
+        public AutoOpenJob()
+        {
+            Models = new List<ModelTask>();
+        }
     }
 }

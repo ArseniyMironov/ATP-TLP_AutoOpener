@@ -1,9 +1,11 @@
 ﻿using AutoOpener.Core.IO;
 using AutoOpener.Core.Jobs;
+using AutoOpener.Core.Models;
 using AutoOpener.Core.Processes;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 
 namespace AutoOpener.LauncherCLI
@@ -13,102 +15,137 @@ namespace AutoOpener.LauncherCLI
         static int Main(string[] args)
         {
             // Пример: AutoOpener.LauncherCLI.exe enqueue 2022 "RSN://srv/.../model.rvt" "AR_Walls;AR_Stairs"
-            if (args.Length < 3)
+            if (args.Length < 2)
             {
-                Console.WriteLine("Usage: enqueue <version> <rsnPath> [worksets(;)] [--wait]");
+                Console.WriteLine("Usage:");
+                Console.WriteLine("  enqueue <version> <rsnPath> [worksets(;)] [--wait]");
+                Console.WriteLine("  run-profile <ProfileName> [--wait]");
                 return 1;
             }
 
             var cmd = args[0];
-            var version = int.Parse(args[1]);
-            var rsn = args[2];
 
-            PathsService.SetVersionContext(version);
+            bool wait = args.Any(a => a.Equals("--wait", StringComparison.OrdinalIgnoreCase));
 
-            bool wait = false;
-            var worksets = new List<string>();
+            AutoOpenJob job = null;
+            int version = 0;
 
-            // Парсим дополнительные аргументы (рабочие наборы и флаг ожидания)
-            for (int i = 3; i < args.Length; i++)
+            if (cmd.Equals("run-profile", StringComparison.OrdinalIgnoreCase))
             {
-                if (args[i].Equals("--wait", StringComparison.OrdinalIgnoreCase))
-                    wait = true;
-                else
-                    worksets.AddRange(args[i].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries));
+                string profileName = args[1];
+                string profilePath = Path.Combine(PathsService.ProfileDir, profileName + ".json");
+
+                if (!File.Exists(profilePath))
+                {
+                    Console.WriteLine($"Profile not found: {profilePath}");
+                    return 1;
+                }
+
+                var profile = JsonStorage.Read<Profile>(profilePath);
+                if (profile == null || profile.Models == null || profile.Models.Count == 0)
+                {
+                    Console.WriteLine($"Profile is invalid or contains no models");
+                    return 1;
+                }
+
+                version = profile.RevitVersion;
+                PathsService.SetVersionContext(version);
+
+                job = new AutoOpenJob
+                {
+                    Id = Guid.NewGuid(),
+                    RevitVersion = version,
+                    CreateNewLocal = true,
+                    Models = profile.Models
+                };
             }
-
-            var job = new AutoOpenJob
+            else if (cmd.Equals("enqueue", StringComparison.OrdinalIgnoreCase))
             {
-                Id = Guid.NewGuid(),
-                RevitVersion = version,
-                RsnPath = rsn,
-                WorksetsByName = worksets,
-                CreateNewLocal = true
-            };
+                if (args.Length < 3) return 1;
+                version = int.Parse(args[1]);
+                string rsn = args[2];
+                PathsService.SetVersionContext(version);
+
+                var worksets = new List<string>();
+                for (int i = 3; i <args.Length; i++)
+                {
+                    if (!args[3].StartsWith("--"))
+                        worksets.AddRange(args[i].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries));
+                }
+
+                job = new AutoOpenJob
+                {
+                    Id = Guid.NewGuid(),
+                    RevitVersion = version,
+                    CreateNewLocal = true,
+                    Models = new List<ModelTask> { new ModelTask { ModelPath = rsn, WorksetsByName = worksets } }
+                };
+            }
+            else
+            {
+                Console.WriteLine("Unknown command.");
+                return 1;
+            }
 
             var jobFile = Path.Combine(PathsService.QueueDirFor(version), job.Id + ".json");
             JsonStorage.Write(jobFile, job);
             CleanupService.CleanupOldArtifacts(version, 7);
 
-            if (cmd.Equals("open-now", StringComparison.OrdinalIgnoreCase) ||
-                cmd.Equals("enqueue", StringComparison.OrdinalIgnoreCase))
+            string firstModelpath = job.Models.FirstOrDefault()?.ModelPath;
+            if (!RevitProcessLauncher.TryStart(version, firstModelpath))
             {
-                if (!RevitProcessLauncher.TryStart(version, rsn))
-                {
-                    Console.WriteLine("Revit.exe not found for version " + version);
-                    return 2;
-                }
+                Console.WriteLine("Revit.exe not found for version " + version);
+                return 2;
+            }
 
-                if (!wait)
-                {
-                    Console.WriteLine($"Job {job.Id} queued and Revit started.");
-                    return 0;
-                }
+            if (!wait)
+            {
+                Console.WriteLine($"Job {job.Id} queued and Revit started.");
+                return 0;
+            }
 
-                // Логика ожидания результата (--wait)
-                Console.WriteLine($"Waiting for result of job {job.Id}...");
-                var resultFile = JobFiles.GetResultPath(job.Id);
-                int timeoutSeconds = 600;
-                int elapsed = 0;
-
-                while (elapsed < timeoutSeconds)
+            Console.WriteLine($"Waiting for result of job {job.Id}...");
+            var resultFile = JobFiles.GetResultPath(job.Id);
+            int timeoutSeconds = 600;
+            int elapsed = 0;
+            
+            while (elapsed < timeoutSeconds)
+            {
+                if (File.Exists(resultFile))
                 {
-                    if (File.Exists(resultFile))
+                    Thread.Sleep(500);
+                    try
                     {
-                        Thread.Sleep(500);  // Даем Revit время закрыть файл (File Handle)
-                        try
+                        var res = JsonStorage.Read<JobResult>(resultFile);
+                        if (res != null)
                         {
-                            var res = JsonStorage.Read<JobResult>(resultFile);
                             if (res.Succeeded)
                             {
                                 Console.WriteLine($"\n[SUCCESS] {res.Message}");
-                                Console.WriteLine($"Local path: {res.ModelPath}");
-                                return 0; // Exit Code 0 = Успех
+                                Console.WriteLine($"Local paths: {string.Join(", ", res.OpenedModelPaths)}");
+                                return 0;
                             }
                             else
                             {
                                 Console.WriteLine($"\n[ERROR] {res.Message}");
-                                return 1; // Exit Code 1 = Ошибка при открытии
+                                return 1;
                             }
                         }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"\n[ERROR] Failed to read result file: {ex.Message}");
-                            return 1;
-                        }
                     }
-
-                    Thread.Sleep(2000);  // Проверяем каждые 2 секунды
-                    elapsed += 2;
-                    Console.Write('.');  // Выводим точки в консоль для понимания, что процесс жив
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"\n[ERROR] Failed to read result file: {ex.Message}");
+                        return 1;
+                    }
                 }
 
-                Console.WriteLine("\n[TIMEOUT] Revit did not process the job in time (10 minutes).");
-                return 3; // Exit Code 3 = Таймаут
+                Thread.Sleep(2000);
+                elapsed += 2;
+                Console.Write(".");
             }
 
-            Console.WriteLine("Unkown command.");
-            return 1;
+            Console.WriteLine("\n[TIMEOUT] Revit did not process the job in time (10 minutes).");
+            return 3;
         }
     }
 }

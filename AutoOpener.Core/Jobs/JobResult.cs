@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace AutoOpener.Core.Jobs
 {
@@ -8,9 +9,12 @@ namespace AutoOpener.Core.Jobs
         public int RevitVersion { get; set; }
         public bool Succeeded { get; set; }
         public string Message { get; set; }
-        public string OutputFile { get; set; }
         public string JobType { get; set; }
-        public string ModelPath { get; set; }
+        public List<string> OpenedModelPaths { get; set; }
         public DateTime CompletedUtc { get; set; }
+        public JobResult()
+        {
+            OpenedModelPaths = new List<string>();
+        }
     }
 }

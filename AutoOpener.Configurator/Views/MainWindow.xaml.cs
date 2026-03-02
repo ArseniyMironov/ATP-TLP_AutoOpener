@@ -105,9 +105,11 @@ namespace AutoOpener.Configurator.Views
                 {
                     Name = name,
                     RevitVersion = version,
-                    ModelPathOrRsn = model,
-                    WorksetsByName = WorksetsList.ToList(),
-                    OpenReadOnly = false
+                    OpenReadOnly = false,
+                    Models = new List<ModelTask>
+                    {
+                        new ModelTask { ModelPath = model, WorksetsByName = WorksetsList.ToList() }
+                    }
                 };
 
                 // ensure profiles dir

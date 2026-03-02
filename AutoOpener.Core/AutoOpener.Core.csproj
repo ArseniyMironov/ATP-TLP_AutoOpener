@@ -69,6 +69,7 @@
     <Compile Include="Jobs\AutoOpenProfile.cs" />
     <Compile Include="Jobs\JobFiles.cs" />
     <Compile Include="Jobs\JobResult.cs" />
+    <Compile Include="Models\ModelTask.cs" />
     <Compile Include="Models\Profile.cs" />
     <Compile Include="Processes\RevitProcessLauncher.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

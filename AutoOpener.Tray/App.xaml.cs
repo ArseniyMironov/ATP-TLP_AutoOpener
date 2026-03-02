@@ -2,13 +2,10 @@
 using AutoOpener.Core.Jobs;
 using System;
 using System.Collections.Generic;
-using System.Configuration;
-using System.Data;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Forms;
 using Application = System.Windows.Application;
@@ -85,9 +82,9 @@ namespace AutoOpener.Tray
                 var result = JsonStorage.Read<JobResult>(e.FullPath);
                 if (result != null)
                 {
-                    string modelName = string.IsNullOrEmpty(result.ModelPath) 
-                        ? "Неизвестная модель" 
-                        : Path.GetFileNameWithoutExtension(result.ModelPath);
+                    string modelName = (result.OpenedModelPaths == null || result.OpenedModelPaths.Count == 0)
+                        ? "Неизвестная модель"
+                        : Path.GetFileNameWithoutExtension(result.OpenedModelPaths.First());
 
                     string title = result.Succeeded ? 
                         $"Revit {result.RevitVersion}: Успех \n {modelName} открыта" 

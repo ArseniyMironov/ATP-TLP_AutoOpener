@@ -6,8 +6,12 @@ namespace AutoOpener.Core.Models
     {
         public string Name { get; set; }
         public int RevitVersion { get; set; }
-        public string ModelPathOrRsn { get; set; }
-        public List<string> WorksetsByName { get; set; }
         public bool OpenReadOnly { get; set; }
+        public List<ModelTask> Models { get; set; }
+
+        public Profile()
+        {
+            Models = new List<ModelTask>();
+        }
     }
 }

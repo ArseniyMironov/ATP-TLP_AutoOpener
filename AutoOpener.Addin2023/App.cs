@@ -4,6 +4,7 @@ using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
 using AutoOpener.Core.IO;
 using AutoOpener.Core.Jobs;
+using AutoOpener.Core.Models;
 using AutoOpener.Core.Processes;
 using System;
 using System.Collections.Generic;
@@ -29,7 +30,7 @@ namespace AutoOpener.Addin2023
             Directory.CreateDirectory(PathsService.LogsDir);
             Directory.CreateDirectory(PathsService.OutDir);
             CleanupService.CleanupOldArtifacts(ThisVersion, 7);
-            Logger.Info("Addin 2022 startup");
+            Logger.Info($"Addin {ThisVersion} startup");
 
             _handler = new OpenJobHandler(ThisVersion);
             _extEvent = ExternalEvent.Create(_handler);
@@ -283,7 +284,8 @@ namespace AutoOpener.Addin2023
         private bool _scheduled;
         private AutoOpenJob _pendingJob;
         private string _pendingJobFile;
-        private ModelPath _modelPath;
+        private int _currentModelIndex;
+        private JobResult _jobResult;
 
         public OpenJobHandler(int revitVersion)
         {
@@ -305,11 +307,10 @@ namespace AutoOpener.Addin2023
             Logger.Info(jobFile == null ? "Execute: no job" : $"Execute: job taken {Path.GetFileName(jobFile)}");
             if (jobFile == null) return;
 
-            AutoOpenJob job;
             try
             {
-                job = JsonStorage.Read<AutoOpenJob>(jobFile);
-                Logger.Info($"Job: ver={job.RevitVersion}, path='{job.RsnPath}', ws={job.WorksetsByName?.Count ?? 0}");
+                _pendingJob = JsonStorage.Read<AutoOpenJob>(jobFile);
+                Logger.Info($"Job: ver={_pendingJob.RevitVersion}, models='{_pendingJob.Models}', ws={_pendingJob.Models?.Count ?? 0}");
             }
             catch (Exception ex)
             {
@@ -319,104 +320,72 @@ namespace AutoOpener.Addin2023
             }
 
             _pendingJobFile = jobFile; // файл помечен как *.running
-            _pendingJob = job;
+            _currentModelIndex = 0;
+            _jobResult = new JobResult
+            {
+                JobId = _pendingJob.Id,
+                RevitVersion = _revitVersion,
+                JobType = "Open",
+                Succeeded = true,
+                Message = "",
+                OpenedModelPaths = new List<string>()
+            };
 
-            try
+            if (_pendingJob.Models == null || _pendingJob.Models.Count == 0)
             {
-                _modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(_pendingJob.RsnPath);
-                Logger.Info("ModelPath converted OK");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Invalid RSN/path: " + ex);
-                try
-                {
-                    var res = new JobResult
-                    {
-                        JobId = _pendingJob != null ? _pendingJob.Id : Guid.Empty,
-                        Succeeded = false,
-                        RevitVersion = _revitVersion,
-                        Message = "Invalid RSN/path: " + ex.Message,
-                        JobType = "Open",
-                        ModelPath = _pendingJob != null ? _pendingJob.RsnPath : null
-                    };
-                    JobFiles.MarkFail(_pendingJobFile ?? "", res);
-                }
-                catch { }
-                ResetState();
-                return;
-            }
-
-            if (IsSameCentralAlreadyOpen(uiapp.Application, _modelPath))
-            {
-                Logger.Info("Model already open → mark done");
-                try
-                {
-                    var res = new JobResult
-                    {
-                        JobId = _pendingJob.Id,
-                        Succeeded = true,
-                        RevitVersion = _revitVersion,
-                        Message = "Model already open",
-                        JobType = "Open",
-                        ModelPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(_modelPath)
-                    };
-                    JobFiles.MarkDone(_pendingJobFile, res);
-                }
-                catch { }
+                _jobResult.Succeeded = false;
+                _jobResult.Message = "No models to open in this job.";
+                JobFiles.MarkFail(_pendingJobFile, _jobResult);
                 ResetState();
                 return;
             }
 
             _scheduled = true;
-            uiapp.Idling += OnUiIdlingOpenOnce;
-            Logger.Info("Scheduled open on next Idling");
+            uiapp.Idling += OnUiIdlingProcessModels;
+            Logger.Info($"[STATE MACHINE] Scheduled job for {_pendingJob.Models.Count} models.");
         }
 
-        private void OnUiIdlingOpenOnce(object sender, IdlingEventArgs e)
+        private void OnUiIdlingProcessModels(object sender, IdlingEventArgs e)
         {
             var uiapp = sender as UIApplication;
-            if (uiapp != null) uiapp.Idling -= OnUiIdlingOpenOnce;
 
-            if (_pendingJob == null || _modelPath == null)
+            // Если задачи закончились или job пустой - отписываемся и формируем ответ
+            if (_pendingJob == null || _currentModelIndex >= _pendingJob.Models.Count)
             {
-                Logger.Info("IdlingOpen: no pending job/state");
-                ResetState();
+                if (uiapp != null) uiapp.Idling -= OnUiIdlingProcessModels;
+                FinalizeJob();
                 return;
             }
 
+            var currentTask = _pendingJob.Models[_currentModelIndex];
+            _currentModelIndex++;
+
+            ProcessSingleModel(uiapp, currentTask);
+        }
+
+        private void ProcessSingleModel(UIApplication uiapp, ModelTask task)
+        {
             // Подпишемся на время открытия (диалоги/ошибки/документ), отпишемся в finally
             uiapp.DialogBoxShowing += OnDialogBoxShowing;
             uiapp.Application.FailuresProcessing += OnFailuresProcessing;
             uiapp.Application.DocumentOpened += OnDocumentOpened;
 
+            string taskName = Path.GetFileName(task.ModelPath ?? "Unkown");
+            Logger.Info($"[STATE MACHINE] Processing model {_currentModelIndex}/{_pendingJob.Models.Count}: {taskName}");
+
             try
             {
-                Logger.Info("IdlingOpen: resolve worksets to open");
-                var toOpenIds = ResolveWorksetsToOpen(_modelPath, _pendingJob.WorksetsByName);
-                Logger.Info($"IdlingOpen: toOpen={toOpenIds.Count}");
+                var _modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(task.ModelPath);
 
-                // вычислим отсутствующие WS (для сообщения)
-                var missingWs = new List<string>();
-                try
+                if (IsSameCentralAlreadyOpen(uiapp.Application, _modelPath))
                 {
-                    if (_pendingJob.WorksetsByName != null && _pendingJob.WorksetsByName.Count > 0)
-                    {
-                        IList<WorksetPreview> previews = null;
-                        try { previews = WorksharingUtils.GetUserWorksetInfo(_modelPath); } catch { previews = null; }
-                        var names = previews != null
-                            ? new HashSet<string>(previews.Select(p => p.Name), StringComparer.OrdinalIgnoreCase)
-                            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                        foreach (var n in _pendingJob.WorksetsByName)
-                            if (!names.Contains(n)) missingWs.Add(n);
-                    }
+                    Logger.Info($"Model {taskName} already open.");
+                    _jobResult.OpenedModelPaths.Add(task.ModelPath);
+                    _jobResult.Message += $"[{taskName}] Already open. ";
+                    return;
                 }
-                catch { /* диагностическое, не критично */ }
 
-                if (missingWs.Count > 0)
-                    Logger.Info("[OPEN] Missing worksets: " + string.Join("; ", missingWs));
-
+                var toOpenIds = ResolveWorksetsToOpen(_modelPath, task.WorksetsByName);
                 var wsc = new WorksetConfiguration(WorksetConfigurationOption.CloseAllWorksets);
                 if (toOpenIds.Count > 0) wsc.Open(toOpenIds.ToList());
 
@@ -424,52 +393,26 @@ namespace AutoOpener.Addin2023
                 {
                     try
                     {
-                        // 1. Формируем путь для локального файла (MyDocuments)
-                        //string docsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                        string docsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                        string originalFileName = _pendingJob.RsnPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Last();
+                        string docsPath = PathsService.OutDirFor(_revitVersion);
+                        string originalFileName = task.ModelPath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Last();
                         string nameWithoutExt = Path.GetFileNameWithoutExtension(originalFileName);
                         string ext = Path.GetExtension(originalFileName);
-
-                        // Получаем имя текущего пользователя Revit
                         string userName = uiapp.Application.Username;
 
-                        // Формируем имя с суффиксом, как это делает интерфейс Revit
                         string localFileName = $"{nameWithoutExt}_{userName}{ext}";
                         string localPathStr = Path.Combine(docsPath, localFileName);
                         ModelPath localModelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(localPathStr);
 
-                        // 2. Пытаемся удалить старый файл (строгая перезапись)
-                        if (File.Exists(localPathStr))
-                        {
-                            // Если файл занят, тут вылетит IOException -> задача упадет (как и требовалось)
-                            File.Delete(localPathStr);
-                        }
+                        if (File.Exists(localPathStr)) File.Delete(localPathStr);
 
-                        // 3. Пытаемся создать локальную копию
-                        // Если модель НЕ workshared, Revit API выбросит ArgumentException
                         WorksharingUtils.CreateNewLocal(_modelPath, localModelPath);
-
-                        // 4. Успех -> подменяем путь на локальный
                         _modelPath = localModelPath;
                         Logger.Info($"[OPEN] Created new local: {localPathStr}");
 
-                        // Пауза для снятия блокировок ОС (Антивирус, индексация диска)
-                        // Заставляем поток подождать 3 секунды перед тем, как Revit начнет читать файл
-                        Logger.Info("[OPEN] Waiting 3 seconds for OS file locks to release...");
                         System.Threading.Thread.Sleep(3000);
                     }
-                    catch (Autodesk.Revit.Exceptions.ArgumentException)
-                    {
-                        // Исключение: "Model is not workshared"
-                        // Согласно логике: "если не worksharing - открываем его (оригинал)"
-                        Logger.Info("[OPEN] Model is not workshared. Opening original path.");
-                    }
-                    catch (Exception ex)
-                    {
-                        // Если модель не workshared или другая ошибка — просто пишем лог и открываем оригинал
-                        Logger.Info($"[OPEN-WARN] Could not create local copy (opening original): {ex.Message}");
-                    }
+                    catch (Autodesk.Revit.Exceptions.ArgumentException) { Logger.Info("[OPEN] Model is not workshared."); }
+                    catch (Exception ex) { Logger.Info($"[OPEN-WARN] Could not create local copy: {ex.Message}"); }
                 }
 
                 var openOpts = new OpenOptions
@@ -480,88 +423,24 @@ namespace AutoOpener.Addin2023
                 };
                 openOpts.SetOpenWorksetsConfiguration(wsc);
 
-                Logger.Info("IdlingOpen: calling OpenDocumentFile...");
+                Logger.Info($"Calling OpenAndActivateDocument for {taskName}...");
                 var uiDoc = uiapp.OpenAndActivateDocument(_modelPath, openOpts, false);
 
-                // --- ДИАГНОСТИКА ОТКРЫТОЙ МОДЕЛИ ---
-                Document doc = uiDoc.Document;
-                if (doc.IsWorkshared)
+                if (uiDoc != null)
                 {
-                    string currentPath = doc.PathName;
-                    string centralPath = "";
-                    try
-                    {
-                        var centralModelPath = doc.GetWorksharingCentralModelPath();
-                        centralPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(centralModelPath);
-                    }
-                    catch { }
-
-                    // Если текущий путь не совпадает с путем хранилища - это локальная копия
-                    bool isLocal = !currentPath.Equals(centralPath, StringComparison.OrdinalIgnoreCase);
-
-                    Logger.Info($"[DIAGNOSTIC] Is Workshared: {doc.IsWorkshared}");
-                    Logger.Info($"[DIAGNOSTIC] Current Path: {currentPath}");
-                    Logger.Info($"[DIAGNOSTIC] Central Path: {centralPath}");
-                    Logger.Info($"[DIAGNOSTIC] Is TRUE Local: {isLocal}");
+                    _jobResult.OpenedModelPaths.Add(uiDoc.Document.PathName);
+                    _jobResult.Message += $"[{taskName}] Opened successfully. ";
                 }
-                else
-                {
-                    Logger.Info($"[DIAGNOSTIC] Document is NOT workshared. Path: {doc.PathName}");
-                }
-                // --- КОНЕЦ ДИАГНОСТИКИ ---
-
-                Logger.Info($"IdlingOpen: OpenDocumentFile returned, doc='{uiDoc?.Document.Title}'");
-
-                // формируем сообщение об успехе
-                string msg = "Opened successfully";
-                if (missingWs.Count > 0)
-                    msg += ". Missing worksets: " + string.Join("; ", missingWs);
-
-                try
-                {
-                    var res = new JobResult
-                    {
-                        JobId = _pendingJob.Id,
-                        Succeeded = true,
-                        RevitVersion = _revitVersion,
-                        Message = msg,
-                        JobType = "Open",
-                        ModelPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(_modelPath)
-                    };
-                    JobFiles.MarkDone(_pendingJobFile, res);
-                }
-                catch { }
-
-                Logger.Info("IdlingOpen: job marked done, finished.");
             }
             catch (Exception ex)
             {
-                var isServer = !string.IsNullOrEmpty(_pendingJob?.RsnPath)
-                    && _pendingJob.RsnPath.TrimStart().StartsWith("RSN://", StringComparison.OrdinalIgnoreCase);
+                var isServer = task.ModelPath != null && task.ModelPath.StartsWith("RSN://", StringComparison.OrdinalIgnoreCase);
                 var reason = ClassifyOpenError(ex, isServer);
+                Logger.Error($"Failed to open {taskName}: {reason}");
 
-                Logger.Error("IdlingOpen failed: " + reason + " | Raw: " + ex);
-
-                try
-                {
-                    var res = new JobResult
-                    {
-                        JobId = _pendingJob != null ? _pendingJob.Id : Guid.Empty,
-                        Succeeded = false,
-                        RevitVersion = _revitVersion,
-                        Message = reason,
-                        JobType = "Open",
-                        ModelPath = _pendingJob != null ? _pendingJob.RsnPath : null
-                    };
-                    JobFiles.MarkFail(_pendingJobFile ?? "", res);
-                }
-                catch { }
-
-                try
-                {
-                    TaskDialog.Show("AutoOpener 2023", "Open failed:\n" + reason);
-                }
-                catch { }
+                // Если модель упала, помечаем общий результат как failed, но продолжаем открывать остальные
+                _jobResult.Succeeded = false;
+                _jobResult.Message += $"[{taskName}] Error: {reason}. ";
             }
             finally
             {
@@ -571,12 +450,25 @@ namespace AutoOpener.Addin2023
                     uiapp.Application.FailuresProcessing -= OnFailuresProcessing;
                     uiapp.Application.DocumentOpened -= OnDocumentOpened;
                 }
-                catch (Exception ex)
-                {
-                    Logger.Error($"[OPEN-CLEANUP] Failed to unsubscribe from events: {ex.Message}");
-                }
-                ResetState();
+                catch (Exception ex) { Logger.Error($"[OPEN-CLEANUP] Failed to unsubscribe from events: {ex.Message}"); }
             }
+        }
+
+        private void FinalizeJob()
+        {
+            if (_pendingJobFile == null) return;
+
+            Logger.Info($"[STATE MACHINE] Job finished. Overall Success: {_jobResult.Succeeded}");
+            try
+            {
+                if (_jobResult.Succeeded)
+                    JobFiles.MarkDone(_pendingJobFile, _jobResult);
+                else
+                    JobFiles.MarkFail(_pendingJobFile, _jobResult);
+            }
+            catch (Exception ex) { Logger.Error($"Failed to mark job result: {ex.Message}"); }
+
+            ResetState();
         }
 
         public string GetName() => "AutoOpener OpenJob ExternalEvent";
@@ -587,50 +479,25 @@ namespace AutoOpener.Addin2023
             try
             {
                 var id = e.DialogId ?? string.Empty;
-                var msg = (e as TaskDialogShowingEventArgs)?.Message
-                       ?? (e as MessageBoxShowingEventArgs)?.Message
-                       ?? string.Empty;
+                var msg = (e as TaskDialogShowingEventArgs)?.Message ?? (e as MessageBoxShowingEventArgs)?.Message ?? string.Empty;
 
-                Logger.Info($"[OPEN] Dialog: Id='{id}' Msg='{msg}'");
-
-                // Duplicate name → Yes (Overwrite)
-                if (id.IndexOf("Duplicate", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Duplicate name", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Overwrite existing", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Дубликат", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Перезаписать", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (id.IndexOf("Duplicate", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Duplicate name", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Overwrite existing", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Дубликат", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Перезаписать", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     (e as TaskDialogShowingEventArgs)?.OverrideResult((int)TaskDialogResult.Yes);
-                    Logger.Info("  -> action: Yes (overwrite)");
                     return;
                 }
 
-                // Opening Worksets/Warnings → OK
-                if (id.IndexOf("Opening Worksets", StringComparison.OrdinalIgnoreCase) >= 0
-                    || id.IndexOf("Opening_Worksets", StringComparison.OrdinalIgnoreCase) >= 0
-                    || id.IndexOf("OpeningWarnings", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Opening Worksets", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Открытие рабочих наборов", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Opening Warnings", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("Предупрежден", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (id.IndexOf("Opening Worksets", StringComparison.OrdinalIgnoreCase) >= 0 || id.IndexOf("OpeningWarnings", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Opening Worksets", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Открытие рабочих наборов", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Opening Warnings", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("Предупрежден", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     (e as TaskDialogShowingEventArgs)?.OverrideResult((int)TaskDialogResult.Ok);
-                    Logger.Info("  -> action: OK (opening worksets/warnings)");
                     return;
                 }
 
-                // Older version model prompt → Yes (Upgrade)
-                if (msg.IndexOf("предыдущей версии", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("будет обновл", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("previous version", StringComparison.OrdinalIgnoreCase) >= 0
-                    || msg.IndexOf("upgraded", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (msg.IndexOf("предыдущей версии", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("будет обновл", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("previous version", StringComparison.OrdinalIgnoreCase) >= 0 || msg.IndexOf("upgraded", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     (e as TaskDialogShowingEventArgs)?.OverrideResult((int)TaskDialogResult.Yes);
-                    Logger.Info("  -> action: Yes (upgrade model)");
                     return;
                 }
-
-                Logger.Info("  -> action: none");
             }
             catch { }
         }
@@ -641,23 +508,10 @@ namespace AutoOpener.Addin2023
             {
                 var fa = e.GetFailuresAccessor();
                 var failures = fa.GetFailureMessages();
-                int warnings = 0, others = 0;
-
                 foreach (var f in failures)
                 {
-                    if (f.GetSeverity() == FailureSeverity.Warning)
-                    {
-                        fa.DeleteWarning(f);
-                        warnings++;
-                    }
-                    else
-                    {
-                        others++;
-                    }
+                    if (f.GetSeverity() == FailureSeverity.Warning) fa.DeleteWarning(f);
                 }
-
-                if (warnings > 0 || others > 0)
-                    Logger.Info($"[OPEN] Failures: deleted warnings={warnings}, other={others}");
             }
             catch { }
         }
@@ -678,6 +532,11 @@ namespace AutoOpener.Addin2023
             var dir = PathsService.QueueDirFor(version);
             if (!Directory.Exists(dir)) return null;
 
+            var files = Directory.GetFiles(dir, "*.json")
+                                 .OrderBy(File.GetCreationTimeUtc)
+                                 .ThenBy(File.GetLastWriteTimeUtc);
+
+            // Блок восстановления зависших задач (Без переименования)
             var runningFiles = Directory.EnumerateFiles(dir, "*.running");
             foreach (var rf in runningFiles)
             {
@@ -702,20 +561,16 @@ namespace AutoOpener.Addin2023
                 }
             }
 
-            var files = Directory.GetFiles(dir, "*.json")
-                                 .OrderBy(File.GetCreationTimeUtc)
-                                 .ThenBy(File.GetLastWriteTimeUtc);
-
             foreach (var f in files)
             {
                 try
                 {
                     // Сначала пробуем переименовать (атомарный захват).
-                    // Если файл занят (пишется), File.Move выбросит IOException
+                    // Если файл занят, File.Move выбросит IOException
                     var running = Path.ChangeExtension(f, ".running");
                     File.Move(f, running);
 
-                    // Теперь читаем уже наш приватный файл
+                    // Теперь читаем уже приватный файл
                     var job = JsonStorage.Read<AutoOpenJob>(running);
                     if (job == null || job.RevitVersion != version)
                     {
@@ -767,7 +622,8 @@ namespace AutoOpener.Addin2023
         private static HashSet<WorksetId> ResolveWorksetsToOpen(ModelPath mp, IList<string> names)
         {
             var result = new HashSet<WorksetId>();
-            if (names == null || names.Count == 0) return result;
+            if (names == null || names.Count == 0)
+                return result;
 
             IList<WorksetPreview> previews = null;
             try
@@ -782,7 +638,8 @@ namespace AutoOpener.Addin2023
                 return result;
             }
 
-            if (previews == null || previews.Count == 0) return result;
+            if (previews == null || previews.Count == 0)
+                return result;
 
             foreach (var name in names)
             {
@@ -794,26 +651,53 @@ namespace AutoOpener.Addin2023
 
         private static void TryDelete(string path)
         {
-            try { if (File.Exists(path)) File.Delete(path); }
-            catch (Exception ex) { Logger.Error($"[IO] TryDelete failed for '{path}': {ex.Message}"); }
+            try
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[IO] TryDelete failed for '{path}': {ex.Message}");
+            }
         }
 
         private static void TryMarkBad(string path)
         {
-            try { if (File.Exists(path)) File.Move(path, Path.ChangeExtension(path, ".bad")); }
-            catch (Exception ex) { Logger.Error($"[IO] TryMarkBad failed for '{path}': {ex.Message}"); }
+            try
+            {
+                if (File.Exists(path))
+                    File.Move(path, Path.ChangeExtension(path, ".bad"));
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[IO] TryMarkBad failed for '{path}': {ex.Message}");
+            }
         }
 
         private static void TryMarkFail(string path)
         {
-            try { if (File.Exists(path)) File.Move(path, Path.ChangeExtension(path, ".fail")); }
-            catch (Exception ex) { Logger.Error($"[IO] TryMarkFail failed for '{path}': {ex.Message}"); }
+            try
+            {
+                if (File.Exists(path))
+                    File.Move(path, Path.ChangeExtension(path, ".fail"));
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[IO] TryMarkFail failed for '{path}': {ex.Message}");
+            }
         }
 
         private static void TryMove(string from, string to)
         {
-            try { if (File.Exists(from)) File.Move(from, to); }
-            catch (Exception ex) { Logger.Error($"[IO] TryMove failed '{from}' -> '{to}': {ex.Message}"); }
+            try
+            {
+                if (File.Exists(from))
+                    File.Move(from, to);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"[IO] TryMove failed '{from}' -> '{to}': {ex.Message}");
+            }
         }
 
         private void ResetState()
@@ -821,7 +705,8 @@ namespace AutoOpener.Addin2023
             _scheduled = false;
             _pendingJob = null;
             _pendingJobFile = null;
-            _modelPath = null;
+            _currentModelIndex = 0;
+            _jobResult = null;
         }
 
         /// <summary>
@@ -830,7 +715,8 @@ namespace AutoOpener.Addin2023
         /// </summary>
         private static string ClassifyOpenError(Exception ex, bool isServerPath)
         {
-            if (ex == null) return "Unknown error";
+            if (ex == null)
+                return "Unknown error";
 
             var msg = ex.Message ?? string.Empty;
             var raw = ex.ToString() ?? string.Empty;
